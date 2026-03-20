@@ -12,25 +12,16 @@ Steps:
 - Generate L1 -> L2 deposit tx
 - Stop Anvil and dump the new zkos-l1-state.json
 
-Environment variables (beyond the required ERA_CONTRACTS_PATH / ZKSYNC_ERA_PATH /
-PROTOCOL_VERSION trio):
+Additional env vars:
 
-  CHAIN_IDS        Comma-separated chain IDs to generate.  Default: "6565,6566".
-                   Example: CHAIN_IDS=6565,6566,6567,6568
+  CHAIN_IDS   Comma-separated chain IDs to generate.  Default: "6565,6566".
+              Example: CHAIN_IDS=6565,6566,6567,6568
 
-  OUTPUT_DIR       If set, chain configs, wallets, contracts and l1-state.json.gz
-                   are written here instead of the default
-                   <REPO_DIR>/local-chains/<version>/multi_chain/ path.
-                   Useful for Docker-based or CI usage where you don't want to
-                   modify the server repo in-place.
-
-  SKIP_BUILD       Set to "1" to skip the contract-build, zkstack-CLI-build and
-                   genesis-generation steps.  Use this when those artefacts are
-                   already compiled into the Docker image (GENESIS_PREBUILT
-                   semantics).  Default: "0".
-
-  SKIP_DEPOSIT_TX  Set to "1" to skip the per-chain L1->L2 deposit transaction
-                   generation step.  Default: "0".
+  OUTPUT_DIR  If set, chain configs, wallets, contracts and l1-state.json.gz
+              are written here instead of the default
+              <REPO_DIR>/local-chains/<version>/multi_chain/ path.
+              Useful for Docker-based or CI usage where you don't want to
+              modify the server repo in-place.
 """
 
 import os
@@ -99,17 +90,10 @@ def fund_accounts(ctx: ScriptCtx, ecosystem_dir: Path) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Multi-chain support helpers
-# ---------------------------------------------------------------------------
-
 def _parse_chain_ids() -> list[str]:
     """
     Read chain IDs from the CHAIN_IDS env var (comma-separated).
     Falls back to the two pre-configured default chains.
-
-    Example:
-        CHAIN_IDS=6565,6566,6567  ->  ["6565", "6566", "6567"]
     """
     raw = os.environ.get("CHAIN_IDS", "6565,6566")
     return [c.strip() for c in raw.split(",") if c.strip()]
@@ -117,20 +101,15 @@ def _parse_chain_ids() -> list[str]:
 
 def _chain_config_template(chain: str, rpc_port: int, protocol_version: str) -> dict:
     """
-    Build a minimal chain_XXXX.yaml template for a chain ID that has no
-    pre-existing config in the server repo.
-
-    All address and key fields are zero-filled placeholders; they will be
-    patched with real values by update_chain_config_yaml() once deployment
-    completes.
+    Minimal chain_XXXX.yaml template for a chain ID that has no pre-existing
+    config in the server repo.  Address and key fields are zero-filled
+    placeholders — they are patched by update_chain_config_yaml() after
+    deployment completes.
     """
     zero_addr = "0x" + "0" * 40
     zero_key  = "0x" + "0" * 64
     return {
-        "general": {
-            "ephemeral": False,
-            "rocks_db_path": "/db/node1",
-        },
+        "general": {"ephemeral": False, "rocks_db_path": "/db/node1"},
         "genesis": {
             "bridgehub_address": zero_addr,
             "bytecode_supplier_address": zero_addr,
@@ -143,14 +122,10 @@ def _chain_config_template(chain: str, rpc_port: int, protocol_version: str) -> 
             "operator_prove_sk": zero_key,
             "operator_execute_sk": zero_key,
         },
-        "rpc": {
-            "address": f"0.0.0.0:{rpc_port}",
-        },
+        "rpc": {"address": f"0.0.0.0:{rpc_port}"},
         "external_price_api_client": {
             "source": "Forced",
-            "forced_prices": {
-                "0x0000000000000000000000000000000000000001": 3000,
-            },
+            "forced_prices": {"0x0000000000000000000000000000000000000001": 3000},
         },
     }
 
@@ -170,13 +145,10 @@ def init_ecosystem(
     protocol_base = ctx.repo_dir / "local-chains" / protocol_version
     default_base = protocol_base / "default"
 
-    # OUTPUT_DIR overrides where chain configs and l1-state.json.gz land.
-    # When set we also skip updating the default/ config (no server-repo concept).
+    # OUTPUT_DIR overrides where outputs land; when set, skip updating default/.
     output_dir_env = os.environ.get("OUTPUT_DIR")
     base = Path(output_dir_env) if output_dir_env else protocol_base / ecosystem_name
     base.mkdir(parents=True, exist_ok=True)
-
-    skip_deposit_tx = os.environ.get("SKIP_DEPOSIT_TX", "0") == "1"
 
     with ctx.section(f"Initialize {ecosystem_name} ecosystem", expected=120):
         utils.clean_dir(ecosystem_dir)
@@ -237,10 +209,7 @@ def init_ecosystem(
     # Start Anvil
     # ------------------------------------------------------------------ #
     with ctx.section(f"Generating l1-state.json for {ecosystem_name}", expected=250):
-        # When OUTPUT_DIR is set, write l1-state directly there; otherwise
-        # use the traditional location inside the server repo.
         l1_state_file = base / "l1-state.json" if output_dir_env else protocol_base / "l1-state.json"
-
         with utils.anvil_dump_state(l1_state_file=l1_state_file):
             # ------------------------------------------------------------------ #
             # Fund accounts
@@ -268,15 +237,13 @@ def init_ecosystem(
             for i, chain in enumerate(chains):
                 # ------------------------------------------------------------------ #
                 # Ensure chain config template exists
-                # For pre-configured chains (e.g. 6565, 6566) the template is already
-                # in the server repo.  For new chain IDs we generate one on the fly.
+                # Pre-configured chains (6565, 6566) already have a file in base/.
+                # New chain IDs get a minimal template created here; it is patched
+                # with real addresses and keys by update_chain_config_yaml() below.
                 # ------------------------------------------------------------------ #
                 chain_yaml = base / f"chain_{chain}.yaml"
                 if not chain_yaml.exists():
-                    ctx.logger.info(
-                        f"No existing config for chain {chain} — creating template "
-                        f"(will be patched with deployed addresses)"
-                    )
+                    ctx.logger.info(f"No existing config for chain {chain} — generating template")
                     rpc_port = 3050 + i
                     with chain_yaml.open("w", encoding="utf-8") as f:
                         _yaml.safe_dump(
@@ -286,7 +253,6 @@ def init_ecosystem(
                             sort_keys=False,
                         )
                         f.write("\n")
-
                 # ------------------------------------------------------------------ #
                 # Update contract addresses and operator keys
                 # ------------------------------------------------------------------ #
@@ -305,15 +271,13 @@ def init_ecosystem(
                 name_suffix = f"_{chain}" if ecosystem_name == "multi_chain" else ""
                 wallets_out = base / f"wallets{name_suffix}.yaml"
                 contracts_out = base / f"contracts{name_suffix}.yaml"
-                # Copy wallets.yaml and contracts.yaml to output location
+                # Copy wallets.yaml and contracts.yaml to local-chains
                 utils.cp(chain_wallets_yaml, wallets_out)
                 utils.cp(contracts_yaml, contracts_out)
                 # ------------------------------------------------------------------ #
                 # Generate deposit transaction
                 # ------------------------------------------------------------------ #
-                if skip_deposit_tx:
-                    ctx.logger.info(f"SKIP_DEPOSIT_TX=1: skipping deposit tx for chain {chain}")
-                else:
+                if not os.environ.get("SKIP_DEPOSIT_TX"):
                     ctx.logger.info("Generating L1 -> L2 deposit transaction...")
                     bridgehub_address = edit_server.get_contract_address(
                         contracts_yaml,
@@ -387,17 +351,13 @@ def script(ctx: ScriptCtx) -> None:
     cargo_version: str = toolchain.cargo_version
     yarn_version: str = toolchain.yarn_version
 
-    skip_build: bool = os.environ.get("SKIP_BUILD", "0") == "1"
-    chains: list[str] = _parse_chain_ids()
+    skip_build = bool(os.environ.get("SKIP_BUILD"))
+    skip_deposit_tx = bool(os.environ.get("SKIP_DEPOSIT_TX"))
 
-    ctx.logger.info(f"Chain IDs: {chains}")
-    if skip_build:
-        ctx.logger.info("SKIP_BUILD=1: skipping contract build, zkstack build and genesis generation")
-
+    # ------------------------------------------------------------------ #
+    # Tooling check
+    # ------------------------------------------------------------------ #
     if not skip_build:
-        # ------------------------------------------------------------------ #
-        # Tooling check
-        # ------------------------------------------------------------------ #
         utils.require_cmds(
             {
                 "yarn": f">={yarn_version}",
@@ -408,32 +368,33 @@ def script(ctx: ScriptCtx) -> None:
             }
         )
 
-        # TODO: remove this later, needs only for v31 for now
-        # ------------------------------------------------------------------ #
-        # Build contracts for zkstack (temporary)
-        # ------------------------------------------------------------------ #
-        if Version(protocol_version) >= Version(PROTOCOL_VERSION_NEXT):
-            zkstack_era_contracts_path: Path = zksync_era_path / "contracts"
-            with ctx.section("Build contracts in zkstack", expected=120):
-                ctx.sh(
-                    """
-                    yarn install
-                    """,
-                    cwd=zkstack_era_contracts_path,
-                )
-                ctx.sh(
-                    """
-                    yarn build:foundry
-                    """,
-                    cwd=zkstack_era_contracts_path / "da-contracts",
-                )
-                ctx.sh(
-                    """
-                    yarn build:foundry
-                    """,
-                    cwd=zkstack_era_contracts_path / "l1-contracts",
-                )
+    # TODO: remove this later, needs only for v31 for now
+    # ------------------------------------------------------------------ #
+    # Build contracts for zkstack (temporary)
+    # ------------------------------------------------------------------ #
+    if not skip_build and Version(protocol_version) >= Version(PROTOCOL_VERSION_NEXT):
+        zkstack_era_contracts_path: Path = zksync_era_path / "contracts"
+        with ctx.section("Build contracts in zkstack", expected=120):
+            ctx.sh(
+                """
+                yarn install
+                """,
+                cwd=zkstack_era_contracts_path,
+            )
+            ctx.sh(
+                """
+                yarn build:foundry
+                """,
+                cwd=zkstack_era_contracts_path / "da-contracts",
+            )
+            ctx.sh(
+                """
+                yarn build:foundry
+                """,
+                cwd=zkstack_era_contracts_path / "l1-contracts",
+            )
 
+    if not skip_build:
         # ------------------------------------------------------------------ #
         # Build contracts
         # ------------------------------------------------------------------ #
@@ -492,12 +453,12 @@ def script(ctx: ScriptCtx) -> None:
     # Multi-chain setup
     # ------------------------------------------------------------------ #
     # TODO: uncomment when gateway chain is supported in main server
-    init_ecosystem(ctx, "multi_chain", chains)
+    init_ecosystem(ctx, "multi_chain", _parse_chain_ids())
     # if Version(protocol_version) == Version(PROTOCOL_VERSION_CURRENT):
-    #     init_ecosystem(ctx, "multi_chain", chains)
+    #     init_ecosystem(ctx, "multi_chain", _parse_chain_ids())
 
     # if Version(protocol_version) >= Version(PROTOCOL_VERSION_NEXT):
-    #     init_ecosystem(ctx, "multi_chain", chains + [config.GATEWAY_CHAIN_ID])
+    #     init_ecosystem(ctx, "multi_chain", _parse_chain_ids() + [config.GATEWAY_CHAIN_ID])
 
     if not skip_build:
         # ------------------------------------------------------------------ #
